@@ -309,7 +309,16 @@ fn spawn_audio(
     // the fact costs disk for the length of the recording and nothing else.
     let wav = path.with_extension("wav");
     let started_ms = now_ms();
-    let child = Command::new("pw-record")
+    let mut cmd = Command::new("pw-record");
+    // A capture stream is linked to a source. Naming a sink does not make
+    // pw-record read that sink's monitor, it makes the target unmatchable, and
+    // the stream falls back to whatever source is around. That is how the
+    // system track ended up holding microphone audio. This property is what
+    // turns it into a monitor capture.
+    if node_is_sink(&node) {
+        cmd.args(["-P", "stream.capture.sink=true"]);
+    }
+    let child = cmd
         .arg("--target")
         .arg(&node)
         .arg(&wav)
@@ -615,6 +624,28 @@ fn default_node(key: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
+/// Whether `name` is an output. Recording one means capturing its monitor,
+/// which pw-record only does when told to.
+fn node_is_sink(name: &str) -> bool {
+    let Ok(out) = Command::new("pw-dump").output() else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return false;
+    };
+    for o in v.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+        if o["type"].as_str() == Some("PipeWire:Interface:Node")
+            && o["info"]["props"]["node.name"].as_str() == Some(name)
+        {
+            return o["info"]["props"]["media.class"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("Audio/Sink");
+        }
+    }
+    false
+}
+
 /// The node both the microphone and the system track would land on, if they
 /// collide. None when they are distinct, which is the normal case.
 ///
@@ -865,6 +896,54 @@ mod tests {
             }
         }
         peers
+    }
+
+    /// Recording an output means capturing its monitor. pw-record does not do
+    /// that just because a sink was named: a capture stream links to a source,
+    /// so the sink target matches nothing and it falls back to a microphone.
+    /// That is what put microphone audio in the system track.
+    #[test]
+    fn spawn_audio_captures_a_sink_monitor() {
+        if !crate::video::have("pw-record") || !crate::video::have("pw-dump") {
+            eprintln!("skipping: pipewire tools missing");
+            return;
+        }
+        let Some(sink) = any_sink() else {
+            eprintln!("skipping: no Audio/Sink present");
+            return;
+        };
+        eprintln!("targeting sink {sink:?}");
+
+        let dir = std::env::temp_dir().join("recap-sink-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("probe.opus");
+        let mut track =
+            super::spawn_audio(Some(sink.clone()), crate::manifest::PartKind::System, "probe", &out)
+                .expect("spawn should succeed")
+                .expect("a named target is never None");
+
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let captured = capture_peers();
+        let _ = track.child.kill();
+        let _ = track.child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            captured.contains(&sink),
+            "system track captured from {captured:?}, not from the sink {sink:?}"
+        );
+    }
+
+    fn any_sink() -> Option<String> {
+        let out = std::process::Command::new("pw-dump").output().ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        v.as_array()?.iter().find_map(|o| {
+            let p = &o["info"]["props"];
+            (o["type"].as_str() == Some("PipeWire:Interface:Node")
+                && p["media.class"].as_str().unwrap_or("").starts_with("Audio/Sink"))
+            .then(|| p["node.name"].as_str().map(str::to_owned))
+            .flatten()
+        })
     }
 
     /// The startup check and the recording path must agree about whether the
