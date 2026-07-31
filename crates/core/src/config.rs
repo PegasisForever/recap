@@ -19,10 +19,13 @@ pub struct Config {
     /// them is recorded. Removing a monitor is how you exclude it.
     #[serde(default)]
     pub sources: Vec<Source>,
-    /// PipeWire node id of the chosen microphone. None means the system
-    /// default, and `Some(0)` means record no microphone at all.
+    /// PipeWire `node.name` of the chosen microphone. None means the system
+    /// default, and an empty string means record no microphone at all.
+    ///
+    /// A name rather than a node id, because ids are assigned per session and
+    /// a saved id points at a different device, or nothing, after a reboot.
     #[serde(default)]
-    pub mic_node: Option<u32>,
+    pub mic_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -94,7 +97,7 @@ impl Default for Config {
                 ..Default::default()
             },
             sources: Vec::new(),
-            mic_node: None,
+            mic_name: None,
         }
     }
 }

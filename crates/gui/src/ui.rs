@@ -32,10 +32,10 @@ fn next_label(cfg: &Config) -> String {
 }
 
 fn mic_target(cfg: &Config) -> AudioTarget {
-    match cfg.mic_node {
+    match &cfg.mic_name {
         None => AudioTarget::DefaultSource,
-        Some(0) => AudioTarget::None,
-        Some(id) => AudioTarget::Node(id),
+        Some(n) if n.is_empty() => AudioTarget::None,
+        Some(n) => AudioTarget::Named(n.clone()),
     }
 }
 
@@ -120,7 +120,7 @@ fn build(app: &adw::Application) {
     let mic = adw::ComboRow::builder().title("Microphone").build();
     audio.add(&mic);
 
-    let mic_sources: Rc<RefCell<Vec<(u32, String)>>> = Rc::new(RefCell::new(Vec::new()));
+    let mic_sources: Rc<RefCell<Vec<(String, String)>>> = Rc::new(RefCell::new(Vec::new()));
     // Swapping the model fires selected-notify, which would otherwise write the
     // reset selection straight back into the config.
     let quiet = Rc::new(std::cell::Cell::new(false));
@@ -139,13 +139,16 @@ fn build(app: &adw::Application) {
             names.extend(fresh.iter().map(|(_, n)| n.clone()));
             let model =
                 gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
-            let selected = match state.borrow().cfg.mic_node {
+            let selected = match &state.borrow().cfg.mic_name {
                 None => 0,
-                Some(0) => 1,
-                Some(id) => fresh
+                Some(n) if n.is_empty() => 1,
+                Some(n) => fresh
                     .iter()
-                    .position(|(i, _)| *i == id)
+                    .position(|(node_name, _)| node_name == n)
                     .map(|p| p as u32 + 2)
+                    // The saved microphone is not plugged in right now, so fall
+                    // back to the default rather than silently pointing at
+                    // whatever happens to sit at that position today.
                     .unwrap_or(0),
             };
             *mic_sources.borrow_mut() = fresh;
@@ -166,10 +169,13 @@ fn build(app: &adw::Application) {
                 return;
             }
             let mut s = state.borrow_mut();
-            s.cfg.mic_node = match row.selected() {
+            s.cfg.mic_name = match row.selected() {
                 0 => None,
-                1 => Some(0),
-                n => mic_sources.borrow().get(n as usize - 2).map(|(id, _)| *id),
+                1 => Some(String::new()),
+                n => mic_sources
+                    .borrow()
+                    .get(n as usize - 2)
+                    .map(|(node_name, _)| node_name.clone()),
             };
             let _ = s.cfg.save();
         }

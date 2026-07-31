@@ -20,26 +20,32 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Which PipeWire node to record audio from.
+///
+/// Everything here is a `node.name`, never an object id. `pw-record --target`
+/// takes "a serial or name", and an object id is neither. Passing one does not
+/// fail: it matches nothing, so the stream falls back to `auto` and silently
+/// records the default device instead of the one that was asked for. Two tracks
+/// aimed at different ids then come back byte for byte identical.
 #[derive(Debug, Clone)]
 pub enum AudioTarget {
     /// Whatever PipeWire currently has set as the default.
     DefaultSink,
     DefaultSource,
-    /// An explicit node id, for virtual or non-default devices.
-    Node(u32),
+    /// An explicit node name, for virtual or non-default devices.
+    Named(String),
     /// Do not capture this track.
     None,
 }
 
 impl AudioTarget {
-    fn resolve(&self) -> Result<Option<u32>> {
+    fn resolve(&self) -> Result<Option<String>> {
         let key = match self {
             AudioTarget::None => return Ok(None),
-            AudioTarget::Node(id) => return Ok(Some(*id)),
+            AudioTarget::Named(name) => return Ok(Some(name.clone())),
             AudioTarget::DefaultSink => "default.audio.sink",
             AudioTarget::DefaultSource => "default.audio.source",
         };
-        Ok(default_node(key)?)
+        default_node(key)
     }
 }
 
@@ -184,7 +190,7 @@ pub fn start(cfg: &Config, opts: &RecordOptions) -> Result<Recording> {
             "recap: the default microphone and the default output are the same \
              PipeWire node ({}), so there is only one thing to record. Keeping \
              it as the system track.",
-            system_node.unwrap_or(0)
+            system_node.clone().unwrap_or_default()
         );
         None
     } else {
@@ -193,7 +199,7 @@ pub fn start(cfg: &Config, opts: &RecordOptions) -> Result<Recording> {
 
     for (node, kind, label, name) in [
         (mic_node, PartKind::Mic, "Microphone", "mic.opus"),
-        (system_node, PartKind::System, "System audio", "system.opus"),
+        (system_node.clone(), PartKind::System, "System audio", "system.opus"),
     ] {
         match spawn_audio(node, kind, label, &opts.outdir.join(name)) {
             Ok(Some(t)) => tracks.push(t),
@@ -290,7 +296,7 @@ fn watch_log(child: &mut Child) -> Arc<Mutex<Option<Encoding>>> {
 }
 
 fn spawn_audio(
-    node: Option<u32>,
+    node: Option<String>,
     kind: PartKind,
     label: &str,
     path: &Path,
@@ -305,7 +311,7 @@ fn spawn_audio(
     let started_ms = now_ms();
     let child = Command::new("pw-record")
         .arg("--target")
-        .arg(node.to_string())
+        .arg(&node)
         .arg(&wav)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -574,29 +580,27 @@ fn parse_size(log: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Resolve `default.audio.sink` or `default.audio.source` to a node id.
+/// The `node.name` PipeWire currently has as `default.audio.sink` or
+/// `default.audio.source`.
 ///
-/// This is what `wpctl inspect @DEFAULT_AUDIO_SINK@` does internally, done here
-/// against `pw-dump` so wireplumber is not a dependency. PipeWire keeps the
-/// defaults in a metadata object named `default`, whose values name a node
-/// rather than identify it:
+/// This is what `wpctl inspect @DEFAULT_AUDIO_SINK@` resolves, done against
+/// `pw-dump` so wireplumber is not a dependency. The defaults live in a
+/// metadata object named `default`, and already hold a name rather than an id:
 ///
 /// ```text
-/// default.audio.sink = {"name": "auto_null"}
+/// default.audio.sink = {"name": "alsa_output.pci-0000_00_1f.3.analog-stereo"}
 /// ```
 ///
-/// so the name still has to be matched against `node.name` to get the id.
-/// Returns None when no default is set, or when the named node is gone.
-fn default_node(key: &str) -> Result<Option<u32>> {
+/// so the name is taken straight from there and handed to `pw-record --target`.
+/// Returns None when no default is set.
+fn default_node(key: &str) -> Result<Option<String>> {
     let out = Command::new("pw-dump")
         .output()
         .context("running pw-dump, is pipewire installed?")?;
     let v: serde_json::Value =
         serde_json::from_slice(&out.stdout).context("parsing pw-dump output")?;
-    let objects = v.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
 
-    let mut want = None;
-    for o in objects {
+    for o in v.as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
         if o["type"].as_str() != Some("PipeWire:Interface:Metadata")
             || o["props"]["metadata.name"].as_str() != Some("default")
         {
@@ -604,32 +608,23 @@ fn default_node(key: &str) -> Result<Option<u32>> {
         }
         for entry in o["metadata"].as_array().into_iter().flatten() {
             if entry["key"].as_str() == Some(key) {
-                want = entry["value"]["name"].as_str().map(str::to_owned);
+                return Ok(entry["value"]["name"].as_str().map(str::to_owned));
             }
-        }
-    }
-    let Some(want) = want else { return Ok(None) };
-
-    for o in objects {
-        if o["type"].as_str() == Some("PipeWire:Interface:Node")
-            && o["info"]["props"]["node.name"].as_str() == Some(want.as_str())
-        {
-            return Ok(o["id"].as_u64().map(|id| id as u32));
         }
     }
     Ok(None)
 }
 
-/// The node id the microphone and the system track would both land on, if they
+/// The node both the microphone and the system track would land on, if they
 /// collide. None when they are distinct, which is the normal case.
 ///
 /// Reads the same defaults `start` will, so what the startup check reports and
 /// what recording actually does cannot drift apart.
-pub fn colliding_audio_node(cfg: &Config) -> Option<u32> {
-    let mic = match cfg.mic_node {
+pub fn colliding_audio_node(cfg: &Config) -> Option<String> {
+    let mic = match &cfg.mic_name {
         None => AudioTarget::DefaultSource,
-        Some(0) => return None, // microphone switched off, nothing to collide
-        Some(id) => AudioTarget::Node(id),
+        Some(n) if n.is_empty() => return None, // microphone off, nothing to collide
+        Some(n) => AudioTarget::Named(n.clone()),
     };
     let mic = mic.resolve().ok().flatten()?;
     let system = AudioTarget::DefaultSink.resolve().ok().flatten()?;
@@ -640,7 +635,7 @@ pub fn colliding_audio_node(cfg: &Config) -> Option<u32> {
 ///
 /// Monitor sources are deliberately excluded. Those are loopbacks of an output
 /// and belong to the system track, not the microphone one.
-pub fn list_audio_sources() -> Vec<(u32, String)> {
+pub fn list_audio_sources() -> Vec<(String, String)> {
     let Ok(out) = Command::new("pw-dump").output() else {
         return Vec::new();
     };
@@ -657,13 +652,14 @@ pub fn list_audio_sources() -> Vec<(u32, String)> {
         if !class.starts_with("Audio/Source") {
             continue;
         }
-        let Some(id) = node["id"].as_u64() else { continue };
-        let name = props["node.description"]
+        let Some(node_name) = props["node.name"].as_str() else {
+            continue;
+        };
+        let shown = props["node.description"]
             .as_str()
             .or_else(|| props["node.nick"].as_str())
-            .or_else(|| props["node.name"].as_str())
-            .unwrap_or("Unnamed input");
-        found.push((id as u32, name.to_string()));
+            .unwrap_or(node_name);
+        found.push((node_name.to_string(), shown.to_string()));
     }
     found.sort_by(|a, b| a.1.cmp(&b.1));
     found
@@ -690,20 +686,24 @@ fn read_first_frame_ms(video: &Path) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+    use super::AudioTarget;
+
     /// `default_node` replaced a `wpctl inspect` call. Where wireplumber is
-    /// still installed the two must agree, so this compares them directly and
-    /// skips when wpctl is absent (which is the case inside the Flatpak).
+    /// still installed the two must name the same node, so this maps the name
+    /// back to an id through pw-dump and compares against wpctl's answer.
     #[test]
     fn default_node_agrees_with_wpctl() {
         if !crate::video::have("wpctl") || !crate::video::have("pw-dump") {
             eprintln!("skipping: wpctl or pw-dump missing");
             return;
         }
-        for (key, alias) in [
-            ("default.audio.sink", "@DEFAULT_AUDIO_SINK@"),
-            ("default.audio.source", "@DEFAULT_AUDIO_SOURCE@"),
+        for (target, alias) in [
+            (AudioTarget::DefaultSink, "@DEFAULT_AUDIO_SINK@"),
+            (AudioTarget::DefaultSource, "@DEFAULT_AUDIO_SOURCE@"),
         ] {
-            let mine = super::default_node(key).expect("pw-dump lookup should not error");
+            let name = target.resolve().expect("pw-dump lookup should not error");
+            let mine = name.as_deref().and_then(node_id_of);
+
             let out = std::process::Command::new("wpctl")
                 .args(["inspect", alias])
                 .output()
@@ -714,15 +714,158 @@ mod tests {
                 .and_then(|l| l.strip_prefix("id "))
                 .and_then(|l| l.split(',').next())
                 .and_then(|l| l.trim().parse().ok());
-            assert_eq!(mine, theirs, "disagreement on {key}");
-            eprintln!("{key}: both say {mine:?}");
+
+            assert_eq!(mine, theirs, "disagreement on {alias} (name {name:?})");
+            eprintln!("{alias}: {name:?} -> id {mine:?}, wpctl says {theirs:?}");
         }
     }
-}
 
-#[cfg(test)]
-mod collision_tests {
-    use crate::config::Config;
+    fn node_id_of(name: &str) -> Option<u32> {
+        let out = std::process::Command::new("pw-dump").output().ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        for o in v.as_array()?.iter() {
+            if o["type"].as_str() == Some("PipeWire:Interface:Node")
+                && o["info"]["props"]["node.name"].as_str() == Some(name)
+            {
+                return o["id"].as_u64().map(|i| i as u32);
+            }
+        }
+        None
+    }
+
+    /// The bug this guards against: `pw-record --target` takes a serial or a
+    /// name, so an object id matches nothing and the stream silently falls back
+    /// to the default device. Recording two different targets then produced two
+    /// identical tracks. Every target recap builds must be a real `node.name`.
+    #[test]
+    fn resolved_targets_are_node_names_not_ids() {
+        if !crate::video::have("pw-dump") {
+            eprintln!("skipping: pw-dump missing");
+            return;
+        }
+        for target in [AudioTarget::DefaultSink, AudioTarget::DefaultSource] {
+            let Some(name) = target.resolve().expect("resolve should not error") else {
+                continue;
+            };
+            assert!(
+                name.parse::<u32>().is_err(),
+                "target {name:?} is a bare number, which --target reads as a serial"
+            );
+            assert!(
+                node_id_of(&name).is_some(),
+                "target {name:?} does not match any node.name in pw-dump"
+            );
+            eprintln!("{target:?} -> {name:?} (a real node.name)");
+        }
+    }
+
+    /// End to end through the real spawn path: recap must capture from the node
+    /// it names, not from whatever the default happens to be.
+    ///
+    /// Runs against a source whose object id and object.serial disagree, which
+    /// is the exact shape that hid the bug. Passing the id there silently
+    /// captured the default instead, so two tracks aimed at different devices
+    /// came back byte for byte identical.
+    #[test]
+    fn spawn_audio_captures_the_named_node() {
+        if !crate::video::have("pw-record") || !crate::video::have("pw-dump") {
+            eprintln!("skipping: pipewire tools missing");
+            return;
+        }
+        let Some((name, id, serial)) = source_with_mismatched_ids() else {
+            eprintln!("skipping: no source where id and serial differ");
+            return;
+        };
+        eprintln!("targeting {name:?} (id {id}, serial {serial})");
+
+        let dir = std::env::temp_dir().join("recap-target-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("probe.opus");
+        let mut track = super::spawn_audio(Some(name.clone()), crate::manifest::PartKind::Mic, "probe", &out)
+            .expect("spawn should succeed")
+            .expect("a named target is never None");
+
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let captured = capture_peers();
+        let _ = track.child.kill();
+        let _ = track.child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            captured.contains(&name),
+            "recap captured from {captured:?}, not from the requested {name:?}"
+        );
+    }
+
+    /// A source node whose id differs from its object.serial, plus both numbers.
+    fn source_with_mismatched_ids() -> Option<(String, u64, u64)> {
+        let out = std::process::Command::new("pw-dump").output().ok()?;
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        for o in v.as_array()?.iter() {
+            if o["type"].as_str() != Some("PipeWire:Interface:Node") {
+                continue;
+            }
+            let p = &o["info"]["props"];
+            if !p["media.class"].as_str().unwrap_or("").starts_with("Audio/Source") {
+                continue;
+            }
+            let (Some(id), Some(serial), Some(name)) = (
+                o["id"].as_u64(),
+                p["object.serial"].as_u64(),
+                p["node.name"].as_str(),
+            ) else {
+                continue;
+            };
+            if id != serial {
+                return Some((name.to_string(), id, serial));
+            }
+        }
+        None
+    }
+
+    /// Which nodes the running pw-record capture stream is linked to.
+    fn capture_peers() -> Vec<String> {
+        let Ok(out) = std::process::Command::new("pw-dump").output() else {
+            return Vec::new();
+        };
+        let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+            return Vec::new();
+        };
+        let objs = v.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        let name_of = |id: u64| -> Option<String> {
+            objs.iter()
+                .find(|o| o["id"].as_u64() == Some(id))
+                .and_then(|o| o["info"]["props"]["node.name"].as_str())
+                .map(str::to_owned)
+        };
+        let mine: Vec<u64> = objs
+            .iter()
+            .filter(|o| {
+                o["type"].as_str() == Some("PipeWire:Interface:Node")
+                    && o["info"]["props"]["media.class"].as_str() == Some("Stream/Input/Audio")
+            })
+            .filter_map(|o| o["id"].as_u64())
+            .collect();
+        let mut peers = Vec::new();
+        for o in objs {
+            if o["type"].as_str() != Some("PipeWire:Interface:Link") {
+                continue;
+            }
+            let p = &o["info"]["props"];
+            if let (Some(inn), Some(outn)) =
+                (p["link.input.node"].as_u64(), p["link.output.node"].as_u64())
+            {
+                if mine.contains(&inn) {
+                    if let Some(n) = name_of(outn) {
+                        if !peers.contains(&n) {
+                            peers.push(n);
+                        }
+                    }
+                }
+            }
+        }
+        peers
+    }
 
     /// The startup check and the recording path must agree about whether the
     /// two audio defaults collide, or the window says one thing and the files
@@ -733,15 +876,15 @@ mod collision_tests {
             eprintln!("skipping: pw-dump missing");
             return;
         }
-        let cfg = Config::default();
+        let cfg = crate::config::Config::default();
         let collision = super::colliding_audio_node(&cfg);
-        let mic = super::AudioTarget::DefaultSource.resolve().unwrap();
-        let sink = super::AudioTarget::DefaultSink.resolve().unwrap();
-        eprintln!("default source -> {mic:?}, default sink -> {sink:?}, collision -> {collision:?}");
+        let mic = AudioTarget::DefaultSource.resolve().unwrap();
+        let sink = AudioTarget::DefaultSink.resolve().unwrap();
+        eprintln!("source -> {mic:?}, sink -> {sink:?}, collision -> {collision:?}");
         match collision {
             Some(n) => {
-                assert_eq!(mic, Some(n), "check says collide, mic resolved elsewhere");
-                assert_eq!(sink, Some(n), "check says collide, sink resolved elsewhere");
+                assert_eq!(mic.as_deref(), Some(n.as_str()));
+                assert_eq!(sink.as_deref(), Some(n.as_str()));
             }
             None => assert!(
                 mic.is_none() || sink.is_none() || mic != sink,

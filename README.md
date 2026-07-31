@@ -96,6 +96,12 @@ The defaults in here are not guesses. The ones worth knowing:
 - **Video is remuxed with `+faststart` before upload.** The recorder writes the
   MP4 index at the end of the file, so without this a browser downloads the
   whole recording before showing a frame.
+- **Audio targets are PipeWire node names, never node ids.** `pw-record
+  --target` takes "a serial or name", and an object id is neither. It does not
+  reject one, it matches nothing and falls back to recording the default
+  device, so the microphone and system tracks come back byte for byte
+  identical. Node ids also change every session, so a saved one points
+  somewhere else after a reboot.
 - **Capture is staged in the cache directory, never in `/tmp`.** A Flatpak's
   `/tmp` is a tmpfs sized at a fraction of RAM, 1.6 GB on a 16 GB machine, and
   Fedora and Arch mount the real `/tmp` as tmpfs too. An hour of two monitors
