@@ -449,7 +449,7 @@ fn build(app: &adw::Application) {
                 match started {
                     Ok(rec) => {
                         link_row.set_visible(false);
-                        btn.set_label("Stop · 0:00");
+                        btn.set_label("Stop 0:00");
                         btn.remove_css_class("suggested-action");
                         btn.add_css_class("destructive-action");
                         // The button carries the elapsed time, so there is no
@@ -461,7 +461,7 @@ fn build(app: &adw::Application) {
                             let state = state.clone();
                             move || {
                                 btn.set_label(&format!(
-                                    "Stop · {}",
+                                    "Stop {}",
                                     elapsed(since.elapsed().as_secs())
                                 ));
                                 // Which encoder each monitor got. Unknown for the
@@ -476,7 +476,7 @@ fn build(app: &adw::Application) {
                                             };
                                             row.set_subtitle(&match encs.get(i).copied().flatten() {
                                                 Some(e) => {
-                                                    format!("{} · {}", src.resolution(), e.label())
+                                                    format!("{}, {}", src.resolution(), e.label())
                                                 }
                                                 None => src.resolution(),
                                             });

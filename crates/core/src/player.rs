@@ -310,7 +310,7 @@ document.addEventListener("fullscreenchange", () => {{
 }});
 
 document.getElementById("meta").textContent =
-  `${{new Date(M.created * 1000).toLocaleString()}} · ${{M.parts.length}} tracks · ${{fmt(M.duration)}}`;
+  `${{new Date(M.created * 1000).toLocaleString()}} - ${{M.parts.length}} tracks - ${{fmt(M.duration)}}`;
 
 Promise.all(els.map(e => e.readyState >= 1 ? Promise.resolve()
   : new Promise(r => e.addEventListener("loadedmetadata", r, {{ once: true }})))).then(paint);
