@@ -32,24 +32,47 @@ page so one request serves both a person and a program.
 
 ## Install
 
-Needs a Wayland or X11 session with a desktop portal, plus these on `PATH`:
+```bash
+flatpak remote-add --user --if-not-exists recap https://pegasisforever.github.io/recap/recap.flatpakrepo
+flatpak install --user recap site.pegasis.Recap
+cp -r skill/watch-recap ~/.claude/skills/
+```
+
+7.4 MB to download, 18.6 MB installed. The remote is signed, so no
+`--no-gpg-verify` is needed. It is a plain directory of files on a static host,
+not a Flathub listing.
+
+### From source instead
+
+```bash
+cargo build --release          # target/release/recap, about 23 MB
+```
+
+That build is not portable. It links 129 shared libraries and needs glibc 2.39
+or newer, so Ubuntu 22.04 and Debian 12 will refuse to start it. It also wants
+these on `PATH`, which the Flatpak carries for you:
 
 | Program | For |
 |---|---|
 | [`gpu-screen-recorder`](https://git.dec05eba.com/gpu-screen-recorder/about/) | capturing each monitor |
-| `pw-record`, `pw-dump`, `wpctl` | audio capture and device listing |
+| `pw-record`, `pw-dump` | audio capture and device listing |
 | `ffmpeg`, `ffprobe` | audio compression, stream preparation |
 | `gdbus` | asking the desktop what monitors exist |
 
 The app checks all of them at startup and says which are missing.
 
-```bash
-cargo build --release          # target/release/recap, about 23 MB
-cp -r skill/watch-recap ~/.claude/skills/
-```
+Either way you need a Wayland or X11 session with a desktop portal, and a GPU
+that gives real OpenGL. `gpu-screen-recorder` refuses to start on llvmpipe, so
+software rendering is not enough even though encoding can fall back to the CPU.
 
 Everything else is configured in the window: monitors, microphone, bucket and
 keys. No config file editing, no command line.
+
+### Publishing your own build
+
+`packaging/publish.sh` builds the Flatpak, signs it, and writes a static OSTree
+repo to `ostree-repo/`. Copy that directory to any web host. The `gh-pages`
+branch of this repo is one such copy.
 
 The skill reads its Gemini key from `GEMINI_API_KEY` and nowhere else, because
 recordings are usually read back on a different machine from the one that made
@@ -73,6 +96,10 @@ The defaults in here are not guesses. The ones worth knowing:
 - **Video is remuxed with `+faststart` before upload.** The recorder writes the
   MP4 index at the end of the file, so without this a browser downloads the
   whole recording before showing a frame.
+- **Capture is staged in the cache directory, never in `/tmp`.** A Flatpak's
+  `/tmp` is a tmpfs sized at a fraction of RAM, 1.6 GB on a 16 GB machine, and
+  Fedora and Arch mount the real `/tmp` as tmpfs too. An hour of two monitors
+  plus two uncompressed audio tracks does not fit in either.
 
 `skill/watch-recap/SKILL.md` has the experiments behind each of these, including
 the things that do not work and can be skipped.
@@ -82,6 +109,7 @@ the things that do not work and can be skipped.
 ```
 crates/core     capture, upload, manifest, player page
 crates/gui      the window
+packaging/      flatpak manifest, desktop file, icon, publish script
 skill/          the watch-recap skill and its stdlib-only Python tool
 ```
 

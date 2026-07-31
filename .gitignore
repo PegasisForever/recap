@@ -1,3 +1,6 @@
 /target
 **/__pycache__/
 *.pyc
+/ostree-repo
+/.flatpak-build
+/.flatpak-builder
