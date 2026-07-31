@@ -115,6 +115,24 @@ impl Config {
         Self::dir().join("tokens").join(id)
     }
 
+    /// Where capture lands before it is uploaded.
+    ///
+    /// Deliberately not the temp directory. Inside a Flatpak sandbox `/tmp` is
+    /// a tmpfs sized at a fraction of RAM (1.6 GB on a 16 GB machine), and
+    /// Fedora and Arch mount the real `/tmp` as tmpfs too. An hour of two
+    /// monitors plus two uncompressed audio tracks is well over that, so
+    /// staging there turns a long recording into an out-of-memory failure.
+    /// The cache directory is on real disk everywhere.
+    /// Created on demand, because the free-space check measures this path and
+    /// `df` on a directory that does not exist yet reports nothing at all.
+    pub fn staging_dir() -> PathBuf {
+        let dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("recap");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
     pub fn load() -> Result<Self> {
         let path = Self::path();
         let mut cfg = if path.exists() {

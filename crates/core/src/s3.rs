@@ -317,7 +317,7 @@ pub async fn upload_recording(
         .iter()
         .map(|p| p.offset_ms as f64 / 1000.0 + p.duration)
         .fold(0.0_f64, f64::max);
-    let staging = std::env::temp_dir().join(format!("recap-web-{id}"));
+    let staging = crate::config::Config::staging_dir().join(format!("web-{id}"));
     std::fs::create_dir_all(&staging)?;
 
     // Preparing a monitor and uploading one are the two slow steps, and they

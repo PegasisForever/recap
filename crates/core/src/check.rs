@@ -6,7 +6,6 @@
 //! all of it in front of the user while it is still cheap to fix.
 
 use crate::config::Config;
-use std::process::Command;
 
 pub struct Issue {
     pub title: String,
@@ -18,19 +17,12 @@ const NEEDED: &[(&str, &str)] = &[
     ("gpu-screen-recorder", "Records the monitors. Build it from git.dec05eba.com or install the Flatpak."),
     ("pw-record", "Captures the microphone and system audio. Part of pipewire."),
     ("pw-dump", "Lists which microphones exist. Part of pipewire."),
-    ("wpctl", "Finds the default audio devices. Part of wireplumber."),
     ("ffmpeg", "Compresses the audio tracks after capture."),
     ("ffprobe", "Reads how long each track turned out."),
     ("gdbus", "Asks the desktop what monitors exist. Part of glib."),
 ];
 
-fn on_path(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use crate::video::have as on_path;
 
 /// Everything wrong right now, worst first. Empty means ready to record.
 pub fn run(cfg: &Config) -> Vec<Issue> {
@@ -78,7 +70,7 @@ pub fn run(cfg: &Config) -> Vec<Issue> {
     // session eats a lot of it: roughly 220 MB per monitor per hour of mostly
     // static screen, plus 640 MB per hour for each audio track, which is
     // written uncompressed and only shrunk once recording stops.
-    let tmp = std::env::temp_dir();
+    let tmp = Config::staging_dir();
     if let Some(free) = crate::video::free_space(&tmp) {
         let per_hour = cfg.sources.len() as u64 * 250 * 1024 * 1024 + 2 * 640 * 1024 * 1024;
         let hours = free / per_hour.max(1);

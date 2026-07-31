@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Which PipeWire node to record audio from.
 #[derive(Debug, Clone)]
 pub enum AudioTarget {
-    /// Whatever WirePlumber currently calls the default.
+    /// Whatever PipeWire currently has set as the default.
     DefaultSink,
     DefaultSource,
     /// An explicit node id, for virtual or non-default devices.
@@ -32,25 +32,13 @@ pub enum AudioTarget {
 
 impl AudioTarget {
     fn resolve(&self) -> Result<Option<u32>> {
-        let name = match self {
+        let key = match self {
             AudioTarget::None => return Ok(None),
             AudioTarget::Node(id) => return Ok(Some(*id)),
-            AudioTarget::DefaultSink => "@DEFAULT_AUDIO_SINK@",
-            AudioTarget::DefaultSource => "@DEFAULT_AUDIO_SOURCE@",
+            AudioTarget::DefaultSink => "default.audio.sink",
+            AudioTarget::DefaultSource => "default.audio.source",
         };
-        let out = Command::new("wpctl")
-            .args(["inspect", name])
-            .output()
-            .context("running wpctl, is pipewire installed?")?;
-        let text = String::from_utf8_lossy(&out.stdout);
-        // First line reads: `id 38, type PipeWire:Interface:Node`
-        let id = text
-            .lines()
-            .next()
-            .and_then(|l| l.strip_prefix("id "))
-            .and_then(|l| l.split(',').next())
-            .and_then(|l| l.trim().parse().ok());
-        Ok(id)
+        Ok(default_node(key)?)
     }
 }
 
@@ -434,7 +422,7 @@ pub fn add_source(id: &str, timeout_secs: u64) -> Result<(u32, u32)> {
     let token = Config::token_path(id);
     crate::config::ensure_parent(&token)?;
     let _ = std::fs::remove_file(&token);
-    let scratch = std::env::temp_dir().join(format!("recap-grant-{id}.mp4"));
+    let scratch = crate::config::Config::staging_dir().join(format!("grant-{id}.mp4"));
 
     let mut child = Command::new("gpu-screen-recorder")
         .args(["-w", "portal"])
@@ -494,6 +482,52 @@ fn parse_size(log: &str) -> Option<(u32, u32)> {
     None
 }
 
+/// Resolve `default.audio.sink` or `default.audio.source` to a node id.
+///
+/// This is what `wpctl inspect @DEFAULT_AUDIO_SINK@` does internally, done here
+/// against `pw-dump` so wireplumber is not a dependency. PipeWire keeps the
+/// defaults in a metadata object named `default`, whose values name a node
+/// rather than identify it:
+///
+/// ```text
+/// default.audio.sink = {"name": "auto_null"}
+/// ```
+///
+/// so the name still has to be matched against `node.name` to get the id.
+/// Returns None when no default is set, or when the named node is gone.
+fn default_node(key: &str) -> Result<Option<u32>> {
+    let out = Command::new("pw-dump")
+        .output()
+        .context("running pw-dump, is pipewire installed?")?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&out.stdout).context("parsing pw-dump output")?;
+    let objects = v.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+
+    let mut want = None;
+    for o in objects {
+        if o["type"].as_str() != Some("PipeWire:Interface:Metadata")
+            || o["props"]["metadata.name"].as_str() != Some("default")
+        {
+            continue;
+        }
+        for entry in o["metadata"].as_array().into_iter().flatten() {
+            if entry["key"].as_str() == Some(key) {
+                want = entry["value"]["name"].as_str().map(str::to_owned);
+            }
+        }
+    }
+    let Some(want) = want else { return Ok(None) };
+
+    for o in objects {
+        if o["type"].as_str() == Some("PipeWire:Interface:Node")
+            && o["info"]["props"]["node.name"].as_str() == Some(want.as_str())
+        {
+            return Ok(o["id"].as_u64().map(|id| id as u32));
+        }
+    }
+    Ok(None)
+}
+
 /// Microphones and other capture devices PipeWire currently knows about.
 ///
 /// Monitor sources are deliberately excluded. Those are loopbacks of an output
@@ -544,4 +578,36 @@ fn read_first_frame_ms(video: &Path) -> Option<i64> {
     let realtime_us: u64 = text.lines().nth(1)?.split('\t').nth(1)?.trim().parse().ok()?;
     let _ = std::fs::remove_file(&sidecar);
     Some((realtime_us / 1000) as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    /// `default_node` replaced a `wpctl inspect` call. Where wireplumber is
+    /// still installed the two must agree, so this compares them directly and
+    /// skips when wpctl is absent (which is the case inside the Flatpak).
+    #[test]
+    fn default_node_agrees_with_wpctl() {
+        if !crate::video::have("wpctl") || !crate::video::have("pw-dump") {
+            eprintln!("skipping: wpctl or pw-dump missing");
+            return;
+        }
+        for (key, alias) in [
+            ("default.audio.sink", "@DEFAULT_AUDIO_SINK@"),
+            ("default.audio.source", "@DEFAULT_AUDIO_SOURCE@"),
+        ] {
+            let mine = super::default_node(key).expect("pw-dump lookup should not error");
+            let out = std::process::Command::new("wpctl")
+                .args(["inspect", alias])
+                .output()
+                .expect("wpctl should run");
+            let theirs: Option<u32> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .and_then(|l| l.strip_prefix("id "))
+                .and_then(|l| l.split(',').next())
+                .and_then(|l| l.trim().parse().ok());
+            assert_eq!(mine, theirs, "disagreement on {key}");
+            eprintln!("{key}: both say {mine:?}");
+        }
+    }
 }

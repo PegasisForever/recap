@@ -11,11 +11,25 @@ use std::process::Command;
 /// Code identifiers and UI labels stay legible at this width. 1024 does not.
 pub const FRAME_WIDTH: u32 = 1536;
 
+/// Walks `PATH` directly rather than shelling out to `which`, because inside a
+/// Flatpak sandbox `which` is not guaranteed to exist. Asking a missing program
+/// whether other programs are missing reports everything as missing.
 pub fn have(bin: &str) -> bool {
-    Command::new("which")
-        .arg(bin)
-        .output()
-        .map(|o| o.status.success())
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| {
+        let candidate = dir.join(bin);
+        std::fs::metadata(&candidate).map(|m| m.is_file()).unwrap_or(false)
+            && is_executable(&candidate)
+    })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
 }
 

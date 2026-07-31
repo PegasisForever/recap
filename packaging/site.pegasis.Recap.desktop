@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Recap
+GenericName=Screen Recorder
+Comment=Record your monitors and get one link back
+Exec=recap
+Icon=site.pegasis.Recap
+Terminal=false
+Categories=AudioVideo;Recorder;GNOME;GTK;
+Keywords=record;screen;capture;monitor;video;screencast;
+StartupNotify=true

@@ -433,7 +433,7 @@ fn build(app: &adw::Application) {
                 // The startup check already disables this button when anything
                 // is missing, and says why at the top of the window.
                 let id = uuid::Uuid::new_v4().to_string();
-                let outdir = std::env::temp_dir().join(format!("recap-{id}"));
+                let outdir = recap_core::config::Config::staging_dir().join(&id);
                 let started = {
                     let s = state.borrow();
                     let opts = RecordOptions {

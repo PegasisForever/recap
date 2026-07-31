@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>site.pegasis.Recap</id>
+  <name>Recap</name>
+  <summary>Record your monitors and get one link back</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      Recap records every monitor you have granted, plus your microphone and
+      system audio, uploads them to S3, and puts one link on your clipboard.
+      The link opens a page with a single transport that drives every track at
+      once.
+    </p>
+    <p>
+      Each monitor and each audio source lands as its own file. Separate audio
+      tracks give exact speaker attribution, because the microphone is one
+      known person and only the system track has to be guessed at. Separate
+      video files exist because the desktop portal grants one display at a time.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">site.pegasis.Recap.desktop</launchable>
+  <url type="homepage">https://github.com/PegasisForever/recap</url>
+  <url type="bugtracker">https://github.com/PegasisForever/recap/issues</url>
+  <developer id="site.pegasis">
+    <name>Pegasis</name>
+  </developer>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-07-31">
+      <description>
+        <p>First packaged build.</p>
+      </description>
+    </release>
+  </releases>
+</component>
