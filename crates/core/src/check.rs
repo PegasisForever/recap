@@ -66,6 +66,20 @@ pub fn run(cfg: &Config) -> Vec<Issue> {
         });
     }
 
+    // When both PipeWire defaults name one node there is only one thing to
+    // record, and the recording ends up with two identical tracks unless this
+    // is caught. Silent to discover afterwards, obvious to fix beforehand.
+    if let Some(node) = crate::record::colliding_audio_node(cfg) {
+        out.push(Issue {
+            title: "Microphone and system audio are the same device".into(),
+            detail: format!(
+                "Both default to PipeWire node {node}, so only one track can be \
+                 recorded. Pick a real microphone above, or set a different \
+                 default output in your sound settings."
+            ),
+        });
+    }
+
     // Capture lands in the temp directory before it is uploaded, and a long
     // session eats a lot of it: roughly 220 MB per monitor per hour of mostly
     // static screen, plus 640 MB per hour for each audio track, which is

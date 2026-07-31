@@ -173,11 +173,29 @@ pub fn start(cfg: &Config, opts: &RecordOptions) -> Result<Recording> {
         }
     }
 
-    for (target, kind, label, name) in [
-        (&opts.mic, PartKind::Mic, "Microphone", "mic.opus"),
-        (&opts.system, PartKind::System, "System audio", "system.opus"),
+    // Both PipeWire defaults can name the same node, and then these two are not
+    // two tracks at all: the same audio gets captured twice, uploaded twice,
+    // and half of it is labelled "Microphone" while being nothing of the kind.
+    // Record it once and say so, rather than shipping a convincing duplicate.
+    let mic_node = opts.mic.resolve()?;
+    let system_node = opts.system.resolve()?;
+    let mic_node = if mic_node.is_some() && mic_node == system_node {
+        eprintln!(
+            "recap: the default microphone and the default output are the same \
+             PipeWire node ({}), so there is only one thing to record. Keeping \
+             it as the system track.",
+            system_node.unwrap_or(0)
+        );
+        None
+    } else {
+        mic_node
+    };
+
+    for (node, kind, label, name) in [
+        (mic_node, PartKind::Mic, "Microphone", "mic.opus"),
+        (system_node, PartKind::System, "System audio", "system.opus"),
     ] {
-        match spawn_audio(target, kind, label, &opts.outdir.join(name)) {
+        match spawn_audio(node, kind, label, &opts.outdir.join(name)) {
             Ok(Some(t)) => tracks.push(t),
             // No such device is not fatal. A machine with no microphone still
             // records its screen and its system audio.
@@ -272,12 +290,12 @@ fn watch_log(child: &mut Child) -> Arc<Mutex<Option<Encoding>>> {
 }
 
 fn spawn_audio(
-    target: &AudioTarget,
+    node: Option<u32>,
     kind: PartKind,
     label: &str,
     path: &Path,
 ) -> Result<Option<Track>> {
-    let Some(node) = target.resolve()? else {
+    let Some(node) = node else {
         return Ok(None);
     };
     // pw-record can write to stdout, but what comes out is not a RIFF stream
@@ -602,6 +620,22 @@ fn default_node(key: &str) -> Result<Option<u32>> {
     Ok(None)
 }
 
+/// The node id the microphone and the system track would both land on, if they
+/// collide. None when they are distinct, which is the normal case.
+///
+/// Reads the same defaults `start` will, so what the startup check reports and
+/// what recording actually does cannot drift apart.
+pub fn colliding_audio_node(cfg: &Config) -> Option<u32> {
+    let mic = match cfg.mic_node {
+        None => AudioTarget::DefaultSource,
+        Some(0) => return None, // microphone switched off, nothing to collide
+        Some(id) => AudioTarget::Node(id),
+    };
+    let mic = mic.resolve().ok().flatten()?;
+    let system = AudioTarget::DefaultSink.resolve().ok().flatten()?;
+    (mic == system).then_some(mic)
+}
+
 /// Microphones and other capture devices PipeWire currently knows about.
 ///
 /// Monitor sources are deliberately excluded. Those are loopbacks of an output
@@ -682,6 +716,37 @@ mod tests {
                 .and_then(|l| l.trim().parse().ok());
             assert_eq!(mine, theirs, "disagreement on {key}");
             eprintln!("{key}: both say {mine:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod collision_tests {
+    use crate::config::Config;
+
+    /// The startup check and the recording path must agree about whether the
+    /// two audio defaults collide, or the window says one thing and the files
+    /// say another.
+    #[test]
+    fn collision_check_matches_what_recording_would_do() {
+        if !crate::video::have("pw-dump") {
+            eprintln!("skipping: pw-dump missing");
+            return;
+        }
+        let cfg = Config::default();
+        let collision = super::colliding_audio_node(&cfg);
+        let mic = super::AudioTarget::DefaultSource.resolve().unwrap();
+        let sink = super::AudioTarget::DefaultSink.resolve().unwrap();
+        eprintln!("default source -> {mic:?}, default sink -> {sink:?}, collision -> {collision:?}");
+        match collision {
+            Some(n) => {
+                assert_eq!(mic, Some(n), "check says collide, mic resolved elsewhere");
+                assert_eq!(sink, Some(n), "check says collide, sink resolved elsewhere");
+            }
+            None => assert!(
+                mic.is_none() || sink.is_none() || mic != sink,
+                "check says no collision but both resolved to {mic:?}"
+            ),
         }
     }
 }
