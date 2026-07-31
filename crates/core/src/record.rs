@@ -16,6 +16,7 @@ use crate::manifest::PartKind;
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Which PipeWire node to record audio from.
@@ -39,6 +40,27 @@ impl AudioTarget {
             AudioTarget::DefaultSource => "default.audio.source",
         };
         Ok(default_node(key)?)
+    }
+}
+
+/// Which encoder gpu-screen-recorder settled on for a monitor.
+///
+/// It decides this at startup, after the capture resolution is known, and says
+/// so only in its log. There is no flag that forces the answer, because a GPU
+/// that cannot encode at the capture resolution falls back the same way one
+/// with no driver does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Encoding {
+    Gpu,
+    Cpu,
+}
+
+impl Encoding {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Encoding::Gpu => "GPU",
+            Encoding::Cpu => "CPU",
+        }
     }
 }
 
@@ -82,11 +104,26 @@ struct Track {
     /// Set for audio, which lands as WAV and is compressed once the capture
     /// has stopped. `path` is the WAV, this is where the Opus should go.
     compress_to: Option<PathBuf>,
+    /// Video only, and None until the recorder says which encoder it took.
+    encoding: Arc<Mutex<Option<Encoding>>>,
 }
 
 pub struct Recording {
     tracks: Vec<Track>,
     pub started: u64,
+}
+
+impl Recording {
+    /// One entry per monitor, in the order they were started. None means the
+    /// recorder has not reached its first frame yet, which takes a second or
+    /// two while the portal session is restored.
+    pub fn encodings(&self) -> Vec<Option<Encoding>> {
+        self.tracks
+            .iter()
+            .filter(|t| t.kind == PartKind::Video)
+            .map(|t| *t.encoding.lock().unwrap())
+            .collect()
+    }
 }
 
 /// A finished capture, before upload.
@@ -187,9 +224,10 @@ fn spawn_monitor(src: &Source, index: usize, opts: &RecordOptions) -> Result<Tra
         .stderr(Stdio::piped());
 
     let started_ms = now_ms();
-    let child = cmd
+    let mut child = cmd
         .spawn()
         .context("spawning gpu-screen-recorder, is it installed?")?;
+    let encoding = watch_log(&mut child);
     Ok(Track {
         kind: PartKind::Video,
         label: src.label.clone(),
@@ -197,7 +235,40 @@ fn spawn_monitor(src: &Source, index: usize, opts: &RecordOptions) -> Result<Tra
         child,
         started_ms,
         compress_to: None,
+        encoding,
     })
+}
+
+/// Read gpu-screen-recorder's log for as long as it runs, and report which
+/// encoder it chose.
+///
+/// The reading is not optional. Its `-v` defaults to on, so it writes a status
+/// line to stderr every second, and a pipe holds 64 KB. Left undrained that
+/// fills after about 35 minutes, at which point the recorder blocks on the
+/// write and capture stops. Nothing reports an error, the file simply stops
+/// growing.
+fn watch_log(child: &mut Child) -> Arc<Mutex<Option<Encoding>>> {
+    let found = Arc::new(Mutex::new(None));
+    let Some(err) = child.stderr.take() else {
+        return found;
+    };
+    let out = found.clone();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+            if line.contains("cpu encoding instead") {
+                *out.lock().unwrap() = Some(Encoding::Cpu);
+            } else if line.starts_with("update fps:") {
+                // Encoder setup is done by the time frames are counted, so the
+                // absence of the fallback warning by now means it got the GPU.
+                let mut slot = out.lock().unwrap();
+                if slot.is_none() {
+                    *slot = Some(Encoding::Gpu);
+                }
+            }
+        }
+    });
+    found
 }
 
 fn spawn_audio(
@@ -220,7 +291,9 @@ fn spawn_audio(
         .arg(&wav)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        // Discarded rather than piped. Nothing here parses pw-record's output,
+        // and a pipe with no reader is a stall waiting to happen.
+        .stderr(Stdio::null())
         .spawn()
         .context("spawning pw-record, is pipewire installed?")?;
     Ok(Some(Track {
@@ -229,6 +302,7 @@ fn spawn_audio(
         path: wav,
         child,
         started_ms,
+        encoding: Arc::new(Mutex::new(None)),
         compress_to: Some(path.to_path_buf()),
     }))
 }

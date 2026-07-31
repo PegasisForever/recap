@@ -427,6 +427,7 @@ fn build(app: &adw::Application) {
         let say = say.clone();
         let link_row = link_row.clone();
         let link_entry = link_entry.clone();
+        let rows = rows.clone();
         move |btn| {
             let recording = state.borrow().live.is_some();
             if !recording {
@@ -456,11 +457,32 @@ fn build(app: &adw::Application) {
                         let since = std::time::Instant::now();
                         let tick = glib::timeout_add_seconds_local(1, {
                             let btn = btn.clone();
+                            let rows = rows.clone();
+                            let state = state.clone();
                             move || {
                                 btn.set_label(&format!(
                                     "Stop · {}",
                                     elapsed(since.elapsed().as_secs())
                                 ));
+                                // Which encoder each monitor got. Unknown for the
+                                // first second or two, while the portal session is
+                                // restored and before any frame is encoded.
+                                if let Ok(s) = state.try_borrow() {
+                                    if let Some(rec) = s.live.as_ref() {
+                                        let encs = rec.encodings();
+                                        for (i, row) in rows.borrow().iter().enumerate() {
+                                            let Some(src) = s.cfg.sources.get(i) else {
+                                                continue;
+                                            };
+                                            row.set_subtitle(&match encs.get(i).copied().flatten() {
+                                                Some(e) => {
+                                                    format!("{} · {}", src.resolution(), e.label())
+                                                }
+                                                None => src.resolution(),
+                                            });
+                                        }
+                                    }
+                                }
                                 glib::ControlFlow::Continue
                             }
                         });
@@ -491,6 +513,13 @@ fn build(app: &adw::Application) {
             btn.add_css_class("suggested-action");
             btn.set_sensitive(false);
             btn.set_label("Record");
+            // The encoder label describes a recording that is now over, so drop
+            // it rather than leave it looking like a live reading.
+            for (i, row) in rows.borrow().iter().enumerate() {
+                if let Some(src) = cfg.sources.get(i) {
+                    row.set_subtitle(&src.resolution());
+                }
+            }
             progress.set_visible(true);
             progress.set_fraction(0.0);
             bar_target.set(0.0);
