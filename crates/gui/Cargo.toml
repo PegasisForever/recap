@@ -1,0 +1,18 @@
+[package]
+name = "recap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "recap"
+path = "src/main.rs"
+
+[dependencies]
+recap-core = { path = "../core" }
+anyhow.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+gtk = { package = "gtk4", version = "0.9" }
+adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
+async-channel = "2"
