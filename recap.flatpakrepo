@@ -1,0 +1,8 @@
+[Flatpak Repo]
+Title=Recap
+Url=https://pegasisforever.github.io/recap/
+Homepage=https://github.com/PegasisForever/recap
+Comment=Record your monitors and get one link back
+Description=Personal Flatpak remote for Recap. Not affiliated with Flathub.
+DefaultBranch=master
+GPGKey=mDMEamzYahYJKwYBBAHaRw8BAQdAZS4Fdzvgn14yf8WrmIyvKS3UBSFTtf3StxqIclmzjoC0OHJlY2FwLXJlcG8gKFJlY2FwIEZsYXRwYWsgc2lnbmluZyBrZXkpIDxtZUBwZWdhc2lzLnNpdGU+iJAEExYKADgWIQQ5oQ6OIhNe6H/0J9Ojn+H0EpSysAUCamzYagIbIwULCQgHAgYVCgkICwIEFgIDAQIeAQIXgAAKCRCjn+H0EpSysLfsAP9OaAfecrnIbx13IKTpnOhsECFHv/Negf3cJvoqLIGHowD+KYVSRELTp6pXAg8SCwy5LDCiI3cYLfLkthEPMoiVdAg=
